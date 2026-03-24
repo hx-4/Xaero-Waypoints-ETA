@@ -125,6 +125,7 @@ public class WaypointWorldRenderer implements EventListener {
         if (!module.isToggled()) { hasTarget = false; hasStoredWaypoint = false; return; }
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) { hasTarget = false; hasStoredWaypoint = false; return; }
+        var camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 
         // Speed update — O(1), every frame
         double dx = player.getX() - player.xOld;
@@ -150,9 +151,9 @@ public class WaypointWorldRenderer implements EventListener {
                 ArrayList<?> list = (ArrayList<?>) getList.invoke(set);
                 if (list == null) { hasStoredWaypoint = false; return; }
 
-                Vec3 eye = player.getEyePosition();
-                Vec3 look = player.getLookAngle();
-                double lookX = look.x, lookZ = look.z;
+                Vec3 eye = camera.getPosition();
+                var lookVec = camera.getLookVector();
+                double lookX = lookVec.x(), lookZ = lookVec.z();
                 double lookXZLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
                 if (lookXZLen > 0.001) {
                     double lookXNorm = lookX / lookXZLen, lookZNorm = lookZ / lookXZLen;
@@ -196,9 +197,9 @@ public class WaypointWorldRenderer implements EventListener {
         hasTarget = false;
         if (!hasStoredWaypoint) return;
 
-        Vec3 eye  = player.getEyePosition();
-        Vec3 look = player.getLookAngle();
-        double lookX = look.x, lookY = look.y, lookZ = look.z;
+        Vec3 eye = camera.getPosition();
+        var lookVec = camera.getLookVector();
+        double lookX = lookVec.x(), lookY = lookVec.y(), lookZ = lookVec.z();
 
         double lookXZLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
         if (lookXZLen < 0.001) return;
@@ -208,6 +209,7 @@ public class WaypointWorldRenderer implements EventListener {
         double relY = storedWpY - eye.y;
         double relZ = storedWpZ - eye.z;
         double distXZ = Math.sqrt(relX * relX + relZ * relZ);
+        double dist3D = Math.sqrt(relX * relX + relY * relY + relZ * relZ);
         if (distXZ < 1.0) return;
         if (cachedMaxDistance > 0 && distXZ > cachedMaxDistance) return;
 
@@ -250,7 +252,7 @@ public class WaypointWorldRenderer implements EventListener {
         if (effectiveSpeed < effectiveMinSpeed) {
             eta = "ETA: ?";
         } else {
-            double etaSecs = distXZ / effectiveSpeed;
+            double etaSecs = dist3D / effectiveSpeed;
             if (module.etaSmoothing.getValue()) {
                 etaSum += etaSecs - etaBuf[etaIdx];
                 etaBuf[etaIdx] = etaSecs;
