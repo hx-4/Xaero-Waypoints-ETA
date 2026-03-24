@@ -23,7 +23,7 @@ public class WaypointETAModule extends ToggleableModule {
 
     // — Preset —
     final EnumSetting<Preset> preset =
-            new EnumSetting<>("Preset", "Apply a preset configuration", Preset.DYNAMIC);
+            new EnumSetting<>("Preset", "Apply a preset configuration", Preset.STATIC);
 
     // — Filters —
     final BooleanSetting filtersGroup =
@@ -149,7 +149,7 @@ public class WaypointETAModule extends ToggleableModule {
         allWaypoints.setValue(true);
         maxDistance.setValue(1000);
         maxDistanceKm.setValue(true);
-        focusAngle.setValue(2);
+        focusAngle.setValue(10);
         textShadow.setValue(true);
         textColor.setValue(new Color(255, 255, 255, 255));
         bgOpacity.setValue(30);
@@ -161,7 +161,7 @@ public class WaypointETAModule extends ToggleableModule {
             case DYNAMIC -> {
                 showWhenUnknown.setValue(false);
                 speedSamples.setValue(15);
-                minSpeed.setValue(15.0);
+                minSpeed.setValue(3);
                 labelOffset.setValue(false);
                 offsetFixed.setValue(false);
                 offsetRelative.setValue(false);

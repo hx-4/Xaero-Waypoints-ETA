@@ -279,12 +279,17 @@ public class WaypointWorldRenderer implements EventListener {
             int textY = (int)(drawY + textH + 10.0);
             int pad = 2;
 
-            event.getGraphics().fill(
-                textX - pad, textY - pad,
-                textX + textW + pad, textY + textH + pad,
-                cachedBgColor
-            );
-            event.getGraphics().flush();
+            if (cachedBgColor != 0) {
+                RenderSystem.enableBlend();
+                RenderSystem.defaultBlendFunc();
+                event.getGraphics().fill(
+                    textX - pad, textY - pad,
+                    textX + textW + pad, textY + textH + pad,
+                    cachedBgColor
+                );
+                event.getGraphics().flush();
+                RenderSystem.disableBlend();
+            }
 
             boolean shadow = module.textShadow.getValue();
             if (useCustomFont) {
