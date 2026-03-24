@@ -1,11 +1,11 @@
 {
-  "Plugin-Class": "org.example.ExamplePlugin",
+  "Plugin-Class": "hxgn.WaypointETAPlugin",
   "Name": "${project.plugin_name}",
   "Version": "${project.plugin_version}",
-  "Description": "Example rusherhack plugin",
-  "URL": "https://github.com/RusherDevelopment/example-plugin",
+  "Description": "Provides an ETA for temp waypoints",
+  "URL": "",
   "Authors": [
-    "John200410"
+    "hx_4"
   ],
   "Minecraft-Versions": [
     "${project.minecraft_version}"
