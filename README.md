@@ -9,3 +9,4 @@ This module is very customizable. It comes with presets to give you an introduct
 
 Known issues:
 - If you're in the Nether and you've selected Overworld coordinates in the Waypoints menu, it will still show ETA's for where the Nether waypoints would be, not the Overworld waypoints.
+- To use Nether Highways and markers up there you need Fixed + Relative. Fixing this soon.
