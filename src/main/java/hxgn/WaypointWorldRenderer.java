@@ -12,25 +12,30 @@ import org.rusherhack.core.event.subscribe.Subscribe;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Arrays;
 
 public class WaypointWorldRenderer implements EventListener {
 
     private final WaypointETAModule module;
 
     // Reflection — set once in constructor
-    private Method getCurrentSession, getWaypointsManager, getCurrentWorld,
-            getCurrentSet, getList, isTemporary, getX, getY, getZ, getNameSafe;
+    private Method getCurrentSession, getWaypointsManager, getAutoWorld,
+            getCurrentSet, getList, isTemporary, isDisabled, isYIncluded, getX, getY, getZ, getNameSafe;
     private boolean reflectionReady = false;
     private int consecutiveErrors = 0;
     private static final int MAX_ERRORS = 3;
 
     // Speed — circular buffer, O(1) update per frame; size driven by SpeedSamples setting
-    private static final int MAX_SPEED_SAMPLES = 100;
-    private final double[] speedBuf = new double[MAX_SPEED_SAMPLES];
-    private int speedBufSize = 20;
+    // Buffer is reallocated whenever the setting changes so size and array length always match
+    private double[] speedBuf;
+    private int speedBufSize;
     private int speedIdx = 0;
     private double speedSum = 0.0;
+
+    // ETA smoothing — optional second circular buffer averaging the computed ETA seconds
+    private double[] etaBuf;
+    private int etaBufSize;
+    private int etaIdx = 0;
+    private double etaSum = 0.0;
 
     // Cached waypoint world position — updated every REFRESH_INTERVAL frames via reflection
     private static final int REFRESH_INTERVAL = 10;
@@ -41,7 +46,7 @@ public class WaypointWorldRenderer implements EventListener {
 
     // Projected screen position — recomputed every frame from cached world pos
     private boolean hasTarget = false;
-    private double scrX, scrY, pitchScrY;
+    private double scrX, scrY;
     private String etaText = "";
     private boolean etaUnknown = false;
     private int cachedTextW, cachedTextH;
@@ -61,6 +66,9 @@ public class WaypointWorldRenderer implements EventListener {
         this.cachedMinSpeed   = module.minSpeed.getValue();
         this.cachedBgColor    = bgColorFromOpacity(module.bgOpacity.getValue());
         this.speedBufSize     = module.speedSamples.getValue();
+        this.speedBuf         = new double[this.speedBufSize];
+        this.etaBufSize       = module.etaSamples.getValue();
+        this.etaBuf           = new double[this.etaBufSize];
         this.cachedMaxDistance = module.maxDistance.getValue() * (module.maxDistanceKm.getValue() ? 1000 : 1);
 
         module.focusAngle.onChange(() -> this.dotThreshold = 1.0 - module.focusAngle.getValue() / 1000.0);
@@ -72,9 +80,15 @@ public class WaypointWorldRenderer implements EventListener {
         module.maxDistanceKm.onChange(() -> this.cachedMaxDistance = module.maxDistance.getValue() * (module.maxDistanceKm.getValue() ? 1000 : 1));
         module.speedSamples.onChange(() -> {
             this.speedBufSize = module.speedSamples.getValue();
-            Arrays.fill(this.speedBuf, 0.0);
-            this.speedIdx = 0;
-            this.speedSum = 0.0;
+            this.speedBuf     = new double[this.speedBufSize]; // reallocate to match new size
+            this.speedIdx     = 0;
+            this.speedSum     = 0.0;
+        });
+        module.etaSamples.onChange(() -> {
+            this.etaBufSize = module.etaSamples.getValue();
+            this.etaBuf     = new double[this.etaBufSize];
+            this.etaIdx     = 0;
+            this.etaSum     = 0.0;
         });
 
         try {
@@ -86,10 +100,12 @@ public class WaypointWorldRenderer implements EventListener {
 
             getCurrentSession   = sessionClass.getDeclaredMethod("getCurrentSession");
             getWaypointsManager = sessionClass.getDeclaredMethod("getWaypointsManager");
-            getCurrentWorld     = managerClass.getDeclaredMethod("getCurrentWorld");
+            getAutoWorld        = managerClass.getDeclaredMethod("getAutoWorld");
             getCurrentSet       = worldClass.getDeclaredMethod("getCurrentSet");
             getList             = setClass.getDeclaredMethod("getList");
             isTemporary         = wpClass.getDeclaredMethod("isTemporary");
+            isDisabled          = wpClass.getDeclaredMethod("isDisabled");
+            isYIncluded         = wpClass.getDeclaredMethod("isYIncluded");
             getX                = wpClass.getDeclaredMethod("getX");
             getY                = wpClass.getDeclaredMethod("getY");
             getZ                = wpClass.getDeclaredMethod("getZ");
@@ -114,28 +130,25 @@ public class WaypointWorldRenderer implements EventListener {
         double dx = player.getX() - player.xOld;
         double dz = player.getZ() - player.zOld;
         double sample = Math.sqrt(dx * dx + dz * dz) * 20.0;
-        int slot = speedIdx % speedBufSize;
-        speedSum += sample - speedBuf[slot];
-        speedBuf[slot] = sample;
+        speedSum += sample - speedBuf[speedIdx];
+        speedBuf[speedIdx] = sample;
         speedIdx = (speedIdx + 1) % speedBufSize;
         double avgSpeed = speedSum / speedBufSize;
 
         // Phase 1 — reflection (every REFRESH_INTERVAL frames): find most looked-at temporary waypoint
         if (++frameTick >= REFRESH_INTERVAL) {
             frameTick = 0;
-            hasStoredWaypoint = false;
-            storedWpName = "";
             try {
                 Object session = getCurrentSession.invoke(null);
-                if (session == null) return; // Xaero session not active yet
+                if (session == null) { hasStoredWaypoint = false; return; }
                 Object manager = getWaypointsManager.invoke(session);
-                if (manager == null) return;
-                Object world = getCurrentWorld.invoke(manager);
-                if (world == null) return;
+                if (manager == null) { hasStoredWaypoint = false; return; }
+                Object world = getAutoWorld.invoke(manager);
+                if (world == null) { hasStoredWaypoint = false; return; }
                 Object set = getCurrentSet.invoke(world);
-                if (set == null) return;
+                if (set == null) { hasStoredWaypoint = false; return; }
                 ArrayList<?> list = (ArrayList<?>) getList.invoke(set);
-                if (list == null) return;
+                if (list == null) { hasStoredWaypoint = false; return; }
 
                 Vec3 eye = player.getEyePosition();
                 Vec3 look = player.getLookAngle();
@@ -145,6 +158,7 @@ public class WaypointWorldRenderer implements EventListener {
                     double lookXNorm = lookX / lookXZLen, lookZNorm = lookZ / lookXZLen;
                     double bestDot = -1.0;
                     for (Object wp : list) {
+                        if ((boolean) isDisabled.invoke(wp)) continue;
                         if (!module.allWaypoints.getValue() && !(boolean) isTemporary.invoke(wp)) continue;
                         double wpX = (int) getX.invoke(wp) + 0.5;
                         double wpZ = (int) getZ.invoke(wp) + 0.5;
@@ -152,15 +166,21 @@ public class WaypointWorldRenderer implements EventListener {
                         double dist = Math.sqrt(relX * relX + relZ * relZ);
                         if (dist < 1.0) continue;
                         double dot = (relX * lookXNorm + relZ * lookZNorm) / dist;
+                        if (dot < dotThreshold) continue;
                         if (dot > bestDot) {
                             bestDot = dot;
                             storedWpX = wpX;
-                            storedWpY = (int) getY.invoke(wp) + 0.5;
+                            storedWpY = (boolean) isYIncluded.invoke(wp)
+                                    ? (int) getY.invoke(wp) + 0.5
+                                    : eye.y;
                             storedWpZ = wpZ;
                             storedWpName = (String) getNameSafe.invoke(wp, "");
-                            hasStoredWaypoint = true;
                         }
                     }
+                    // Only update hasStoredWaypoint when a waypoint is actively found this tick.
+                    // If nothing is in the cone, keep the previous stored waypoint so fast
+                    // movement toward a close waypoint doesn't cause a flicker drop.
+                    if (bestDot > -1.0) hasStoredWaypoint = true;
                 }
                 consecutiveErrors = 0; // successful refresh
             } catch (Exception e) {
@@ -191,9 +211,10 @@ public class WaypointWorldRenderer implements EventListener {
         if (distXZ < 1.0) return;
         if (cachedMaxDistance > 0 && distXZ > cachedMaxDistance) return;
 
-        // Visibility: horizontal cone check — threshold driven by AppearStrictness setting
+        // Visibility: horizontal cone check with a small hysteresis buffer so minor
+        // frame-to-frame camera oscillations near the boundary don't cause flickering
         double horizontalDot = (relX * lookXNorm + relZ * lookZNorm) / distXZ;
-        if (horizontalDot < dotThreshold) return;
+        if (horizontalDot < dotThreshold - 0.01) return;
 
         // Full 3D dot with look direction — used as the perspective divisor
         double forwardDot = relX * lookX + relY * lookY + relZ * lookZ;
@@ -216,28 +237,40 @@ public class WaypointWorldRenderer implements EventListener {
         double ndcY = -upDot / forwardDot / tanHalfFovV;
 
         scrX = (ndcX + 1.0) / 2.0 * guiW;
-        scrY = (ndcY + 1.0) / 2.0 * guiH;
-
-        // Pitch-only Y — for Relative mode: follows camera pitch but ignores waypoint world Y
-        double tanHalfFov = Math.tan(Math.toRadians(Minecraft.getInstance().options.fov().get()) / 2.0);
-        double pitchNdcY = lookY / lookXZLen / tanHalfFov;
-        pitchScrY = (pitchNdcY + 1.0) / 2.0 * guiH;
+        // Clamp projected Y to screen bounds — no branching, no threshold, no jumps.
+        // When the waypoint is off-screen vertically the label slides to the edge smoothly.
+        scrY = Math.max(4.0, Math.min(guiH - 4.0, (ndcY + 1.0) / 2.0 * guiH));
 
         // Build label text
-        String eta = buildEta(distXZ, avgSpeed, cachedMinSpeed);
+        boolean useFixedSpeed = module.setSpeed.getValue();
+        double effectiveSpeed = useFixedSpeed ? module.customSpeed.getValue() : avgSpeed;
+        double effectiveMinSpeed = useFixedSpeed ? 0.0 : cachedMinSpeed;
+
+        String eta;
+        if (effectiveSpeed < effectiveMinSpeed) {
+            eta = "ETA: ?";
+        } else {
+            double etaSecs = distXZ / effectiveSpeed;
+            if (module.etaSmoothing.getValue()) {
+                etaSum += etaSecs - etaBuf[etaIdx];
+                etaBuf[etaIdx] = etaSecs;
+                etaIdx = (etaIdx + 1) % etaBufSize;
+                etaSecs = etaSum / etaBufSize;
+            }
+            eta = buildEta((int) etaSecs);
+        }
         etaUnknown = eta.equals("ETA: ?");
         labelBuilder.setLength(0);
-        StringBuilder sb = labelBuilder;
-        if (module.showName.getValue() && !storedWpName.isEmpty()) sb.append(storedWpName).append(" | ");
+        if (module.showName.getValue() && !storedWpName.isEmpty()) labelBuilder.append(storedWpName).append(" | ");
         if (module.showDistance.getValue()) {
             if (module.distanceKm.getValue() && distXZ >= 1999) {
-                sb.append(String.format("%.2fkm", distXZ / 1000.0)).append(" | ");
+                labelBuilder.append(String.format("%.2fkm", distXZ / 1000.0)).append(" | ");
             } else {
-                sb.append((int) distXZ).append("m | ");
+                labelBuilder.append((int) distXZ).append("m | ");
             }
         }
-        sb.append(eta);
-        etaText = sb.toString();
+        labelBuilder.append(eta);
+        etaText = labelBuilder.toString();
         if (module.customFont.getValue()) {
             var rFont = RusherHackAPI.getRenderer2D().getFontRenderer();
             cachedTextW = (int) rFont.getStringWidth(etaText);
@@ -265,7 +298,7 @@ public class WaypointWorldRenderer implements EventListener {
             if (module.labelOffset.getValue()) {
                 if (module.offsetFixed.getValue()) {
                     drawX = guiW * 0.5;
-                    drawY = module.offsetRelative.getValue() ? pitchScrY : guiH * 0.5;
+                    drawY = module.offsetRelative.getValue() ? scrY : guiH * 0.5;
                 }
                 drawX += cachedOffsetX;
                 drawY += cachedOffsetY;
@@ -313,9 +346,7 @@ public class WaypointWorldRenderer implements EventListener {
         }
     }
 
-    private static String buildEta(double dist, double speed, double minSpeed) {
-        if (speed < minSpeed) return "ETA: ?";
-        int totalSecs = (int)(dist / speed);
+    private static String buildEta(int totalSecs) {
         if (totalSecs < 60) return "ETA: " + totalSecs + "s";
         if (totalSecs < 7200) {
             int minutes = totalSecs / 60, seconds = totalSecs % 60;

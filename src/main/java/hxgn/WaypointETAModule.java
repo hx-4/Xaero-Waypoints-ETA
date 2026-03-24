@@ -12,7 +12,7 @@ import java.awt.Color;
 public class WaypointETAModule extends ToggleableModule {
 
     public enum Preset {
-        DYNAMIC, STATIC, FIXED, RELATIVE;
+        DYNAMIC, STATIC, FIXED, RELATIVE, EBOUNCER;
 
         @Override
         public String toString() {
@@ -33,11 +33,11 @@ public class WaypointETAModule extends ToggleableModule {
             new BooleanSetting("AllWaypoints", "Include permanent waypoints, not just temporary ones", true);
 
     final NumberSetting<Integer> maxDistance =
-            new NumberSetting<>("MaxDistance", "Hide label beyond this distance (0 = off)", 10, 0, 1000)
+            new NumberSetting<>("MaxDistance", "Hide label beyond this distance (0 = off)", 0, 0, 10000)
                     .incremental(10);
 
     final BooleanSetting maxDistanceKm =
-            new BooleanSetting("MaxDistanceKm", "Interpret MaxDistance value as kilometres instead of metres. That means it'll max out at 1 million blocks. Set it to 0 if you need more lol", true)
+            new BooleanSetting("MaxDistanceKm", "Interpret MaxDistance value as kilometres instead of metres. That means it'll max out at 10 million blocks. Set it to 0 if you need more lol", true)
                     .setVisibility(() -> this.maxDistance.getValue() > 0);
 
     final NumberSetting<Integer> focusAngle =
@@ -66,12 +66,30 @@ public class WaypointETAModule extends ToggleableModule {
             new BooleanSetting("Speed", "Speed averaging settings", true);
 
     final NumberSetting<Integer> speedSamples =
-            new NumberSetting<>("SpeedSamples", "Frames averaged for speed (more = smoother, less = reactive)", 20, 5, 100)
-                    .incremental(1);
+            new NumberSetting<>("SpeedSamples", "Frames averaged for speed (more = smoother, less = reactive)", 60, 5, 1800)
+                    .incremental(1)
+                    .setVisibility(() -> !this.setSpeed.getValue());
+
+    final BooleanSetting setSpeed =
+            new BooleanSetting("SetSpeed", "Use a fixed speed instead of measuring it", false);
+
+    final NumberSetting<Double> customSpeed =
+            new NumberSetting<>("CustomSpeed", "Fixed travel speed in blocks/second", 8.0, 1.0, 40.0)
+                    .incremental(0.5)
+                    .setVisibility(this.setSpeed::getValue);
 
     final NumberSetting<Double> minSpeed =
-            new NumberSetting<>("MinSpeed", "Minimum speed (b/s) before ETA shows as unknown", 0.5, 0.0, 40.0)
-                    .incremental(0.05);
+            new NumberSetting<>("MinSpeed", "Minimum speed (b/s) before ETA shows as unknown", 3.0, 0.0, 40.0)
+                    .incremental(0.05)
+                    .setVisibility(() -> !this.setSpeed.getValue());
+
+    final BooleanSetting etaSmoothing =
+            new BooleanSetting("ETASmoothing", "Average the displayed ETA over recent frames to reduce jitter", true);
+
+    final NumberSetting<Integer> etaSamples =
+            new NumberSetting<>("ETASamples", "Frames to average the ETA over (more = smoother display)", 20, 5, 200)
+                    .incremental(1)
+                    .setVisibility(this.etaSmoothing::getValue);
 
     // — Style —
     final BooleanSetting styleGroup =
@@ -128,7 +146,7 @@ public class WaypointETAModule extends ToggleableModule {
 
         this.filtersGroup.addSubSettings(this.allWaypoints, this.maxDistance, this.maxDistanceKm, this.focusAngle);
         this.labelGroup.addSubSettings(this.showName, this.showDistance, this.distanceKm, this.showWhenUnknown);
-        this.speedGroup.addSubSettings(this.speedSamples, this.minSpeed);
+        this.speedGroup.addSubSettings(this.speedSamples, this.setSpeed, this.customSpeed, this.minSpeed, this.etaSmoothing, this.etaSamples);
         this.styleGroup.addSubSettings(this.customFont, this.textShadow, this.textColor, this.bgOpacity);
         this.labelOffset.addSubSettings(this.offsetX, this.offsetY, this.offsetFixed, this.offsetRelative, this.resetOffset);
 
@@ -147,12 +165,16 @@ public class WaypointETAModule extends ToggleableModule {
     private void applyPreset(Preset p) {
         // Shared base — applied by all presets
         allWaypoints.setValue(true);
-        maxDistance.setValue(1000);
+        maxDistance.setValue(0);
         maxDistanceKm.setValue(true);
         focusAngle.setValue(10);
         textShadow.setValue(true);
         textColor.setValue(new Color(255, 255, 255, 255));
         bgOpacity.setValue(30);
+        speedSamples.setValue(50);
+        etaSmoothing.setValue(true);
+        etaSamples.setValue(20);
+        setSpeed.setValue(false);
         customFont.setValue(false);
         showName.setValue(false);
         showDistance.setValue(false);
@@ -160,7 +182,6 @@ public class WaypointETAModule extends ToggleableModule {
         switch (p) {
             case DYNAMIC -> {
                 showWhenUnknown.setValue(false);
-                speedSamples.setValue(15);
                 minSpeed.setValue(3);
                 labelOffset.setValue(false);
                 offsetFixed.setValue(false);
@@ -168,7 +189,6 @@ public class WaypointETAModule extends ToggleableModule {
             }
             case STATIC -> {
                 showWhenUnknown.setValue(true);
-                speedSamples.setValue(20);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(false);
                 offsetFixed.setValue(false);
@@ -176,7 +196,6 @@ public class WaypointETAModule extends ToggleableModule {
             }
             case FIXED -> {
                 showWhenUnknown.setValue(true);
-                speedSamples.setValue(20);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(true);
                 offsetFixed.setValue(true);
@@ -186,13 +205,17 @@ public class WaypointETAModule extends ToggleableModule {
             }
             case RELATIVE -> {
                 showWhenUnknown.setValue(true);
-                speedSamples.setValue(20);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(true);
                 offsetFixed.setValue(true);
                 offsetRelative.setValue(true);
                 offsetX.setValue(0);
                 offsetY.setValue(12);
+            }
+            case EBOUNCER -> {
+                showWhenUnknown.setValue(true);
+                setSpeed.setValue(true);
+                customSpeed.setValue(40.0);
             }
         }
     }
