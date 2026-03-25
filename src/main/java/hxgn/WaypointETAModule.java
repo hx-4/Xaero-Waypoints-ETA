@@ -6,6 +6,7 @@ import org.rusherhack.client.api.setting.ColorSetting;
 import org.rusherhack.core.setting.BooleanSetting;
 import org.rusherhack.core.setting.EnumSetting;
 import org.rusherhack.core.setting.NumberSetting;
+import org.rusherhack.core.setting.StringSetting;
 
 import java.awt.Color;
 
@@ -16,101 +17,130 @@ public class WaypointETAModule extends ToggleableModule {
 
         @Override
         public String toString() {
-            String enumName = name();
-            return enumName.charAt(0) + enumName.substring(1).toLowerCase();
+            String name = name();
+            return name.charAt(0) + name.substring(1).toLowerCase();
         }
     }
 
-    // — Preset —
+    // ==== Preset ====
     final EnumSetting<Preset> preset =
             new EnumSetting<>("Preset", "Apply a preset configuration", Preset.STATIC);
 
-    // — Filters —
+    // ==== Filters ====
     final BooleanSetting filtersGroup =
             new BooleanSetting("Filters", "Waypoint selection rules", true);
 
-    final BooleanSetting allWaypoints =
-            new BooleanSetting("AllWaypoints", "Include permanent waypoints, not just temporary ones", true);
+    final BooleanSetting onlyTemporary =
+            new BooleanSetting("OnlyTemporary", "Only show ETAs for temporary waypoints, not all of them.", false)
+                    .setVisibility(this.filtersGroup::getValue);
 
     final NumberSetting<Integer> maxDistance =
             new NumberSetting<>("MaxDistance", "Hide label beyond this distance (0 = off)", 0, 0, 10000)
-                    .incremental(10);
+                    .incremental(10)
+                    .setVisibility(this.filtersGroup::getValue);
 
     final BooleanSetting maxDistanceKm =
-            new BooleanSetting("MaxDistanceKm", "Interpret MaxDistance value as kilometres instead of metres. That means it'll max out at 10 million blocks. Set it to 0 if you need more lol", true)
-                    .setVisibility(() -> this.maxDistance.getValue() > 0);
+            new BooleanSetting("MaxDistanceKm", "Interpret MaxDistance as kilometres instead of metres", true)
+                    .setVisibility(() -> this.filtersGroup.getValue() && this.maxDistance.getValue() > 0);
 
     final NumberSetting<Integer> focusAngle =
-            new NumberSetting<>("FocusAngle", "How wide the look cone is before a waypoint gets selected (0=exact, 100=loose)", 2, 0, 100)
-                    .incremental(1);
+            new NumberSetting<>("FocusAngle", "How wide the horizontal look cone is (0=exact crosshair, 100=very loose)", 10, 0, 100)
+                    .incremental(1)
+                    .setVisibility(this.filtersGroup::getValue);
 
-    // — Label —
-    final BooleanSetting labelGroup =
-            new BooleanSetting("Label", "What information to show in the label", true);
+    // ==== Display ====
+    final BooleanSetting displayGroup =
+            new BooleanSetting("Display", "What information to show in the label", true);
+
+    final BooleanSetting hideLabel =
+            new BooleanSetting("HideLabel", "Hide the \"ETA: \" text before the time.", false)
+                    .setVisibility(this.displayGroup::getValue);
 
     final BooleanSetting showName =
-            new BooleanSetting("ShowName", "Show the waypoint name in the label", false);
+            new BooleanSetting("ShowName", "Show the waypoint name in the label", false)
+                    .setVisibility(this.displayGroup::getValue);
 
     final BooleanSetting showDistance =
-            new BooleanSetting("ShowDistance", "Show distance to waypoint in the label", false);
+            new BooleanSetting("ShowDistance", "Show distance to waypoint in the label", false)
+                    .setVisibility(this.displayGroup::getValue);
 
     final BooleanSetting distanceKm =
-            new BooleanSetting("AutoKm", "Show km when distance is large, metres otherwise.", true)
-                    .setVisibility(this.showDistance::getValue);
+            new BooleanSetting("AutoKm", "Show km when distance is large, metres otherwise", true)
+                    .setVisibility(() -> this.displayGroup.getValue() && this.showDistance.getValue());
 
     final BooleanSetting showWhenUnknown =
-            new BooleanSetting("ShowUnknownETA", "Show the label even when speed can't be measured yet", false);
+            new BooleanSetting("ShowUnknownETA", "Show the label even when speed can't be measured yet", false)
+                    .setVisibility(this.displayGroup::getValue);
 
-    // — Speed —
+    final StringSetting unknownText =
+            new StringSetting("UnknownText", "Text shown when ETA can't be calculated", "?")
+                    .setVisibility(() -> this.displayGroup.getValue() && this.showWhenUnknown.getValue());
+
+    final ColorSetting unknownColor =
+            new ColorSetting("UnknownTextColor", "Color of the unknown ETA text", new Color(49, 165, 161, 255))
+                    .setVisibility(() -> this.displayGroup.getValue() && this.showWhenUnknown.getValue());
+
+    final NumberSetting<Integer> fadeDistance =
+            new NumberSetting<>("FadeDistance", "Begin fading the label at this distance (blocks). 0 = off.", 10, 0, 50)
+                    .incremental(5)
+                    .setVisibility(this.displayGroup::getValue);
+
+    // ==== Speed ====
     final BooleanSetting speedGroup =
             new BooleanSetting("Speed", "Speed averaging settings", true);
+
+    final BooleanSetting setSpeed =
+            new BooleanSetting("SetSpeed", "Use a fixed speed instead of measuring it", false)
+                    .setVisibility(this.speedGroup::getValue);
+
+    final NumberSetting<Double> customSpeed =
+            new NumberSetting<>("CustomSpeed", "Fixed travel speed in blocks/second", 40.79, 1.0, 40.79)
+                    .incremental(0.5)
+                    .setVisibility(() -> this.speedGroup.getValue() && this.setSpeed.getValue());
 
     final NumberSetting<Integer> speedSamples =
             new NumberSetting<>("SpeedSamples", "Frames averaged for speed (more = smoother, less = reactive)", 60, 5, 1800)
                     .incremental(1)
-                    .setVisibility(() -> !this.setSpeed.getValue());
-
-    final BooleanSetting setSpeed =
-            new BooleanSetting("SetSpeed", "Use a fixed speed instead of measuring it", false);
-
-    final NumberSetting<Double> customSpeed =
-            new NumberSetting<>("CustomSpeed", "Fixed travel speed in blocks/second", 8.0, 1.0, 40.0)
-                    .incremental(0.5)
-                    .setVisibility(this.setSpeed::getValue);
+                    .setVisibility(this.speedGroup::getValue);
 
     final NumberSetting<Double> minSpeed =
             new NumberSetting<>("MinSpeed", "Minimum speed (b/s) before ETA shows as unknown", 3.0, 0.0, 40.0)
                     .incremental(0.05)
-                    .setVisibility(() -> !this.setSpeed.getValue());
+                    .setVisibility(() -> this.speedGroup.getValue() && !this.setSpeed.getValue());
 
     final BooleanSetting etaSmoothing =
-            new BooleanSetting("ETASmoothing", "Average the displayed ETA over recent frames to reduce jitter", true);
+            new BooleanSetting("ETASmoothing", "Average the displayed ETA over recent frames to reduce jitter", true)
+                    .setVisibility(() -> this.speedGroup.getValue() && !this.setSpeed.getValue());
 
     final NumberSetting<Integer> etaSamples =
             new NumberSetting<>("ETASamples", "Frames to average the ETA over (more = smoother display)", 20, 5, 200)
                     .incremental(1)
-                    .setVisibility(this.etaSmoothing::getValue);
+                    .setVisibility(() -> this.speedGroup.getValue() && !this.setSpeed.getValue() && this.etaSmoothing.getValue());
 
-    // — Style —
-    final BooleanSetting styleGroup =
-            new BooleanSetting("Style", "Visual appearance of the label", true);
+    // ==== Formatting ====
+    final BooleanSetting formattingGroup =
+            new BooleanSetting("Formatting", "Visual appearance of the label", true);
 
     final BooleanSetting customFont =
-            new BooleanSetting("CustomFont", "Use RusherHack font renderer instead of Minecraft font", false);
+            new BooleanSetting("CustomFont", "Use RusherHack font renderer instead of Minecraft font", false)
+                    .setVisibility(this.formattingGroup::getValue);
 
     final BooleanSetting textShadow =
-            new BooleanSetting("TextShadow", "Draw a drop shadow behind the ETA text", true);
+            new BooleanSetting("TextShadow", "Draw a drop shadow behind the ETA text", true)
+                    .setVisibility(this.formattingGroup::getValue);
 
     final ColorSetting textColor =
-            new ColorSetting("TextColor", "ETA label text color", new Color(255, 255, 255, 255));
+            new ColorSetting("TextColor", "ETA label text color", new Color(255, 255, 255, 255))
+                    .setVisibility(this.formattingGroup::getValue);
 
     final NumberSetting<Integer> bgOpacity =
-            new NumberSetting<>("BackgroundOpacity", "Opacity of the background rect (0-100)", 30, 0, 100)
-                    .incremental(1);
+            new NumberSetting<>("BackgroundOpacity", "Opacity of the background rect (0-100)", 20, 0, 100)
+                    .incremental(1)
+                    .setVisibility(this.formattingGroup::getValue);
 
-    // — Position —
+    // ==== Position ====
     final BooleanSetting labelOffset =
-            new BooleanSetting("LabelOffset", "Enable custom label positioning", false);
+            new BooleanSetting("Position", "Enable custom label positioning", false);
 
     final NumberSetting<Integer> offsetX =
             new NumberSetting<>("X", 0, -100, 100)
@@ -144,10 +174,10 @@ public class WaypointETAModule extends ToggleableModule {
     public WaypointETAModule() {
         super("WaypointETA", "Shows ETA to the looked-at Xaero temporary waypoint", ModuleCategory.CLIENT);
 
-        this.filtersGroup.addSubSettings(this.allWaypoints, this.maxDistance, this.maxDistanceKm, this.focusAngle);
-        this.labelGroup.addSubSettings(this.showName, this.showDistance, this.distanceKm, this.showWhenUnknown);
-        this.speedGroup.addSubSettings(this.speedSamples, this.setSpeed, this.customSpeed, this.minSpeed, this.etaSmoothing, this.etaSamples);
-        this.styleGroup.addSubSettings(this.customFont, this.textShadow, this.textColor, this.bgOpacity);
+        this.filtersGroup.addSubSettings(this.onlyTemporary, this.focusAngle, this.maxDistance, this.maxDistanceKm);
+        this.displayGroup.addSubSettings(this.hideLabel, this.showWhenUnknown, this.unknownText, this.unknownColor, this.showName, this.fadeDistance, this.showDistance, this.distanceKm);
+        this.speedGroup.addSubSettings(this.setSpeed, this.customSpeed, this.speedSamples, this.minSpeed, this.etaSmoothing, this.etaSamples);
+        this.formattingGroup.addSubSettings(this.customFont, this.textShadow, this.textColor, this.bgOpacity);
         this.labelOffset.addSubSettings(this.offsetX, this.offsetY, this.offsetFixed, this.offsetRelative, this.resetOffset);
 
         this.preset.onChange(() -> applyPreset(this.preset.getValue()));
@@ -155,16 +185,17 @@ public class WaypointETAModule extends ToggleableModule {
         this.registerSettings(
                 this.preset,
                 this.filtersGroup,
-                this.labelGroup,
+                this.displayGroup,
                 this.speedGroup,
-                this.styleGroup,
+                this.formattingGroup,
                 this.labelOffset
         );
     }
 
     private void applyPreset(Preset p) {
         // Shared base — applied by all presets
-        allWaypoints.setValue(true);
+        hideLabel.setValue(false);
+        onlyTemporary.setValue(false);
         maxDistance.setValue(0);
         maxDistanceKm.setValue(true);
         focusAngle.setValue(10);
@@ -181,20 +212,32 @@ public class WaypointETAModule extends ToggleableModule {
 
         switch (p) {
             case DYNAMIC -> {
-                showWhenUnknown.setValue(false);
-                minSpeed.setValue(3);
+                unknownText.setValue("(˘ω˘✿)ノ*:･ﾟ✧");
+                focusAngle.setValue(2);
+                fadeDistance.setValue(15);
+                showWhenUnknown.setValue(true);
+                minSpeed.setValue(4.32);
                 labelOffset.setValue(false);
                 offsetFixed.setValue(false);
                 offsetRelative.setValue(false);
+                offsetX.setValue(0);
+                offsetY.setValue(0);
+                hideLabel.setValue(true);
             }
             case STATIC -> {
+                unknownText.setValue("( ´・_・)旦`");
+                fadeDistance.setValue(5);
                 showWhenUnknown.setValue(true);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(false);
                 offsetFixed.setValue(false);
                 offsetRelative.setValue(false);
+                offsetX.setValue(0);
+                offsetY.setValue(0);
             }
             case FIXED -> {
+                unknownText.setValue("ヽ(¬_¬ )");
+                fadeDistance.setValue(5);
                 showWhenUnknown.setValue(true);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(true);
@@ -204,6 +247,8 @@ public class WaypointETAModule extends ToggleableModule {
                 offsetY.setValue(-50);
             }
             case RELATIVE -> {
+                unknownText.setValue("(っ˘ω˘ς )");
+                fadeDistance.setValue(5);
                 showWhenUnknown.setValue(true);
                 minSpeed.setValue(0.5);
                 labelOffset.setValue(true);
@@ -213,9 +258,16 @@ public class WaypointETAModule extends ToggleableModule {
                 offsetY.setValue(12);
             }
             case EBOUNCER -> {
+                hideLabel.setValue(true);
+                minSpeed.setValue(0.5);
+                etaSmoothing.setValue(false);
+                unknownText.setValue("∿≋∿ξ=ξ=ε=ε=∿ ≡ 厂(´∀`)7 ≡");
+                fadeDistance.setValue(5);
                 showWhenUnknown.setValue(true);
                 setSpeed.setValue(true);
-                customSpeed.setValue(40.0);
+                customSpeed.setValue(40.79);
+                offsetX.setValue(0);
+                offsetY.setValue(0);
             }
         }
     }

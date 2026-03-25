@@ -11,7 +11,6 @@ public class WaypointETAPlugin extends Plugin {
     @Override
     public void onLoad() {
         RusherHackAPI.getModuleManager().registerFeature(this.module);
-        RusherHackAPI.getCommandManager().registerFeature(new XaeroDebugCommand());
         RusherHackAPI.getEventBus().subscribe(this.waypointWorldRenderer);
         this.getLogger().info("Loaded WaypointETA");
     }
