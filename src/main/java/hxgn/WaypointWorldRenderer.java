@@ -276,11 +276,16 @@ public class WaypointWorldRenderer implements EventListener {
         boolean hideLabel = module.hideLabel.getValue();
         boolean useFixedSpeed = module.setSpeed.getValue();
         double effectiveSpeed = useFixedSpeed ? module.customSpeed.getValue() : avgSpeed;
-        double effectiveMinSpeed = useFixedSpeed ? 0.0 : cachedMinSpeed;
+
+        // Sanitize unknownText - strip § codes so unknownColor always wins, cap length
+        String rawUnknown = module.unknownText.getValue().strip();
+        if (rawUnknown.isEmpty()) rawUnknown = "?";
+        rawUnknown = rawUnknown.replace("§", "");
+        if (rawUnknown.length() > 64) rawUnknown = rawUnknown.substring(0, 64);
 
         String eta;
         if (avgSpeed < cachedMinSpeed) {
-            eta = (!hideLabel ? "ETA: " : "") + module.unknownText.getValue();
+            eta = (!hideLabel ? "ETA: " : "") + rawUnknown;
         } else {
             double etaSecs = dist3D / effectiveSpeed;
             if (module.etaSmoothing.getValue()) {
@@ -291,7 +296,7 @@ public class WaypointWorldRenderer implements EventListener {
             }
             eta = buildEta((int) etaSecs, hideLabel);
         }
-        etaUnknown = eta.endsWith(module.unknownText.getValue());
+        etaUnknown = eta.endsWith(rawUnknown);
 
         labelBuilder.setLength(0);
         if (module.showName.getValue() && !storedWpName.isEmpty()) labelBuilder.append(storedWpName).append(" | ");
