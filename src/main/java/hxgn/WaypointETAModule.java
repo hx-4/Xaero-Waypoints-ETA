@@ -4,37 +4,13 @@ import org.rusherhack.client.api.feature.module.ModuleCategory;
 import org.rusherhack.client.api.feature.module.ToggleableModule;
 import org.rusherhack.client.api.setting.ColorSetting;
 import org.rusherhack.core.setting.BooleanSetting;
-import org.rusherhack.core.setting.EnumSetting;
 import org.rusherhack.core.setting.NumberSetting;
-import org.rusherhack.core.setting.Setting;
 import org.rusherhack.core.setting.StringSetting;
 
 import java.awt.Color;
 
-/*
-TODO:
-- Port to Meteor or XaeroPlus addon
- */
-
 public class WaypointETAModule extends ToggleableModule {
 
-    public enum Preset {
-        MINIMAL, DYNAMIC, STATIC, FIXED, RELATIVE, CUSTOM;
-
-        @Override
-        public String toString() {
-            String name = name();
-            return name.charAt(0) + name.substring(1).toLowerCase();
-        }
-    }
-
-    private boolean applyingPreset = false;
-
-    // ==== Preset ====
-    final EnumSetting<Preset> preset =
-            new EnumSetting<>("Preset", "Apply a preset configuration", Preset.MINIMAL);
-
-    // ==== Filters ====
     final BooleanSetting filtersGroup =
             new BooleanSetting("Filters", "Waypoint selection rules", true);
 
@@ -56,7 +32,6 @@ public class WaypointETAModule extends ToggleableModule {
                     .incremental(1)
                     .setVisibility(this.filtersGroup::getValue);
 
-    // ==== Display ====
     final BooleanSetting displayGroup =
             new BooleanSetting("Display", "What information to show in the label", true);
 
@@ -81,7 +56,6 @@ public class WaypointETAModule extends ToggleableModule {
             new BooleanSetting("AutoKm", "Show km when distance is large, metres otherwise", true)
                     .setVisibility(() -> this.displayGroup.getValue() && this.showDistance.getValue());
 
-    // UnknownETA — group toggle whose children are the unknown-label settings
     final BooleanSetting showWhenUnknown =
             new BooleanSetting("UnknownETA", "Show the label even when speed can't be measured yet", false)
                     .setVisibility(this.displayGroup::getValue);
@@ -103,7 +77,6 @@ public class WaypointETAModule extends ToggleableModule {
                         else unknownColor.setRainbowMode(ColorSetting.RainbowMode.DEFAULT);
                     });
 
-    // ==== Speed ====
     final BooleanSetting speedGroup =
             new BooleanSetting("Speed", "Speed averaging settings", true);
 
@@ -136,7 +109,6 @@ public class WaypointETAModule extends ToggleableModule {
                     .incremental(1)
                     .setVisibility(() -> this.speedGroup.getValue() && !this.setSpeed.getValue());
 
-    // ==== Formatting ====
     final BooleanSetting formattingGroup =
             new BooleanSetting("Formatting", "Visual appearance of the label", true);
 
@@ -165,7 +137,6 @@ public class WaypointETAModule extends ToggleableModule {
                     .incremental(1)
                     .setVisibility(this.formattingGroup::getValue);
 
-    // ==== Position ====
     final BooleanSetting labelOffset =
             new BooleanSetting("Position", "Enable custom label positioning", false);
 
@@ -192,7 +163,7 @@ public class WaypointETAModule extends ToggleableModule {
                     .setVisibility(this.labelOffset::getValue);
 
     public WaypointETAModule() {
-        super("XaeroWaypointETA", "Shows ETA to the looked-at Xaero temporary waypoint", ModuleCategory.WORLD);
+        super("XaeroETA", "Shows ETA to the looked-at Xaero temporary waypoint", ModuleCategory.WORLD);
 
         this.filtersGroup.addSubSettings(this.onlyTemporary, this.focusAngle, this.maxDistance, this.maxDistanceKm);
         this.showWhenUnknown.addSubSettings(this.unknownText, this.unknownColor, this.rainbowGradientUnknownText);
@@ -201,21 +172,7 @@ public class WaypointETAModule extends ToggleableModule {
         this.formattingGroup.addSubSettings(this.customFont, this.textShadow, this.textColor, this.rainbowGradientText, this.bgOpacity);
         this.labelOffset.addSubSettings(this.offsetX, this.offsetY, this.offsetFixed, this.offsetRelative, this.resetOffset);
 
-        this.preset.onChange(() -> applyPreset(this.preset.getValue()));
-
-        // Switch to Custom whenever the user manually changes any setting
-        for (Setting<?> s : new Setting<?>[] {
-                filtersGroup, onlyTemporary, maxDistance, maxDistanceKm, focusAngle,
-                displayGroup, hideLabel, showName, showDistance, distanceKm, showWhenUnknown,
-                unknownText, unknownColor, rainbowGradientUnknownText, fadeDistance,
-                speedGroup, setSpeed, customSpeed, elytHwy, speedSamples, minSpeed, averageEstimate,
-                formattingGroup, customFont, textShadow, textColor, rainbowGradientText, bgOpacity,
-                labelOffset, offsetX, offsetY, offsetFixed, offsetRelative
-        }) {
-            s.onChange(this::switchToCustom);
-        }
         this.resetOffset.onChange(() -> {
-            switchToCustom();
             if (this.resetOffset.getValue()) {
                 this.offsetX.setValue(0);
                 this.offsetY.setValue(0);
@@ -224,106 +181,11 @@ public class WaypointETAModule extends ToggleableModule {
         });
 
         this.registerSettings(
-                this.preset,
                 this.filtersGroup,
                 this.displayGroup,
                 this.speedGroup,
                 this.formattingGroup,
                 this.labelOffset
         );
-    }
-
-    private void switchToCustom() {
-        if (!applyingPreset) {
-            this.preset.setValue(Preset.CUSTOM);
-        }
-    }
-
-    private void applyPreset(Preset p) {
-        if (p == Preset.CUSTOM) return;
-        applyingPreset = true;
-        try {
-            // Shared base — applied by all presets
-            hideLabel.setValue(false);
-            onlyTemporary.setValue(false);
-            maxDistance.setValue(0);
-            maxDistanceKm.setValue(true);
-            focusAngle.setValue(10);
-            textShadow.setValue(true);
-            textColor.setValue(new Color(255, 255, 255, 255));
-            bgOpacity.setValue(30);
-            speedSamples.setValue(50);
-            averageEstimate.setValue(20);
-            setSpeed.setValue(false);
-            customFont.setValue(false);
-            showName.setValue(false);
-            showDistance.setValue(false);
-            rainbowGradientText.setValue(false);
-            elytHwy.setValue(true);
-
-            switch (p) {
-                case MINIMAL -> {
-                    focusAngle.setValue(2);
-                    fadeDistance.setValue(15);
-                    showWhenUnknown.setValue(false);
-                    minSpeed.setValue(4.32);
-                    labelOffset.setValue(false);
-                    offsetFixed.setValue(false);
-                    offsetRelative.setValue(false);
-                    offsetX.setValue(0);
-                    offsetY.setValue(0);
-                    hideLabel.setValue(true);
-                }
-                case DYNAMIC -> {
-                    unknownText.setValue("(˘ω˘✿)ノ*:･ﾟ✧");
-                    focusAngle.setValue(2);
-                    fadeDistance.setValue(15);
-                    showWhenUnknown.setValue(true);
-                    minSpeed.setValue(4.32);
-                    labelOffset.setValue(false);
-                    offsetFixed.setValue(false);
-                    offsetRelative.setValue(false);
-                    offsetX.setValue(0);
-                    offsetY.setValue(0);
-                    hideLabel.setValue(true);
-                    rainbowGradientText.setValue(true);
-                }
-                case STATIC -> {
-                    unknownText.setValue("( ´・_・)旦`");
-                    fadeDistance.setValue(5);
-                    showWhenUnknown.setValue(true);
-                    minSpeed.setValue(0.5);
-                    labelOffset.setValue(false);
-                    offsetFixed.setValue(false);
-                    offsetRelative.setValue(false);
-                    offsetX.setValue(0);
-                    offsetY.setValue(0);
-                }
-                case FIXED -> {
-                    unknownText.setValue("ヽ(¬_¬ )");
-                    fadeDistance.setValue(5);
-                    showWhenUnknown.setValue(true);
-                    minSpeed.setValue(0.5);
-                    labelOffset.setValue(true);
-                    offsetFixed.setValue(true);
-                    offsetRelative.setValue(false);
-                    offsetX.setValue(0);
-                    offsetY.setValue(-50);
-                }
-                case RELATIVE -> {
-                    unknownText.setValue("(っ˘ω˘ς )");
-                    fadeDistance.setValue(5);
-                    showWhenUnknown.setValue(true);
-                    minSpeed.setValue(0.5);
-                    labelOffset.setValue(true);
-                    offsetFixed.setValue(true);
-                    offsetRelative.setValue(true);
-                    offsetX.setValue(0);
-                    offsetY.setValue(12);
-                }
-            }
-        } finally {
-            applyingPreset = false;
-        }
     }
 }

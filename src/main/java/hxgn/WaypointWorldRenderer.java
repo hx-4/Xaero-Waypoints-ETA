@@ -24,31 +24,26 @@ public class WaypointWorldRenderer implements EventListener {
     private final WaypointETAModule module;
     private final StringBuilder labelBuilder = new StringBuilder();
 
-    // Reflection — set once in constructor
     private Method getCurrentSession, getWaypointsManager, getAutoWorld,
             getCurrentSet, getList, isTemporary, isDisabled, isYIncluded, getX, getY, getZ, getNameSafe;
     private boolean reflectionReady = false;
     private int consecutiveErrors = 0;
 
-    // Speed — circular buffer, O(1) update per frame; reallocated when SpeedSamples changes
     private double[] speedBuf;
     private int speedBufSize;
     private int speedIdx = 0;
     private double speedSum = 0.0;
 
-    // ETA smoothing — second circular buffer averaging computed ETA seconds
     private double[] etaBuf;
     private int etaBufSize;
     private int etaIdx = 0;
     private double etaSum = 0.0;
 
-    // Cached waypoint world position — updated every REFRESH_INTERVAL frames via reflection
     private int frameTick = 0;
     private boolean hasStoredWaypoint = false;
     private double storedWpX, storedWpY, storedWpZ;
     private String storedWpName = "";
 
-    // Projected screen position — recomputed every frame from cached world pos
     private boolean hasTarget = false;
     private double scrX, scrY;
     private double fadeAlpha = 1.0;
@@ -56,7 +51,6 @@ public class WaypointWorldRenderer implements EventListener {
     private boolean etaUnknown = false;
     private int cachedTextW, cachedTextH;
 
-    // Cached derived values — updated via onChange, not per-frame
     private double dotThreshold;
     private double cachedOffsetX, cachedOffsetY;
     private double cachedMinSpeed;
@@ -127,10 +121,38 @@ public class WaypointWorldRenderer implements EventListener {
     @Override
     public boolean isListening() { return reflectionReady; }
 
-    // Phase 1 — find the most looked-at waypoint via reflection.
-    // Uses horizontal dot as cone gate, then angular deviation (horizontal +
-    // vertical) to rank candidates. atan2 for vertical ensures the comparison
-    // is distance-independent — unlike relY/dist3D which shrinks for far waypoints.
+    private boolean isNetherHighwayActive(LocalPlayer player) {
+        if (!module.elytHwy.getValue()) return false;
+        var level = Minecraft.getInstance().level;
+        return level != null
+                && level.dimension() == Level.NETHER
+                && player.getY() >= 115.0 && player.getY() <= 125.0
+                && player.isFallFlying();
+    }
+
+    private double sampleSpeed(LocalPlayer player) {
+        double dx = player.getX() - player.xOld;
+        double dz = player.getZ() - player.zOld;
+        double sample = Math.sqrt(dx * dx + dz * dz) * 20.0;
+        speedSum += sample - speedBuf[speedIdx];
+        speedBuf[speedIdx] = sample;
+        speedIdx = (speedIdx + 1) % speedBufSize;
+        return speedSum / speedBufSize;
+    }
+
+    private void updateFade(double dist3D) {
+        int fd = module.fadeDistance.getValue();
+        if (fd > 0 && dist3D < fd) {
+            double t = dist3D / fd;
+            fadeAlpha = t * t;
+        } else {
+            fadeAlpha = 1.0;
+        }
+    }
+
+    // Picks the waypoint closest to the look direction using horizontal dot as a cone gate,
+    // then combined horizontal + vertical angular deviation to rank. atan2 for vertical
+    // keeps the comparison distance-independent.
     private void refreshWaypoint(net.minecraft.client.Camera camera) throws Exception {
         Object session = getCurrentSession.invoke(null);
         if (session == null) { hasStoredWaypoint = false; return; }
@@ -164,11 +186,9 @@ public class WaypointWorldRenderer implements EventListener {
             double distXZ = Math.sqrt(relX * relX + relZ * relZ);
             if (distXZ < 0.5) continue;
 
-            // Horizontal cone gate
             double hDot = (relX * lookXNorm + relZ * lookZNorm) / distXZ;
             if (hDot < dotThreshold) continue;
 
-            // Angular deviation — distance-independent ranking
             double hAngle = Math.acos(Math.min(1.0, hDot));
             double wpY = (boolean) isYIncluded.invoke(wp) ? (int) getY.invoke(wp) + 0.5 : eye.y;
             double vAngle = Math.atan2(wpY - eye.y, distXZ) + pitchRad;
@@ -183,11 +203,9 @@ public class WaypointWorldRenderer implements EventListener {
             storedWpName = (String) getNameSafe.invoke(wp, "");
         }
 
-        // If nothing in the cone, keep previous waypoint to avoid flicker on close approach
-        if (!found) return;
+        if (!found) return; // keep previous to avoid flicker on close approach
 
         if (storedWpX != prevX || storedWpZ != prevZ) {
-            // Switched waypoints — reset fade only if new one is outside the fade zone
             int fd = module.fadeDistance.getValue();
             double newDistXZ = Math.sqrt(
                     (storedWpX - eye.x) * (storedWpX - eye.x) +
@@ -206,34 +224,10 @@ public class WaypointWorldRenderer implements EventListener {
         var camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 
         boolean useFixedSpeed = module.setSpeed.getValue();
+        boolean elytHwyActive = !useFixedSpeed && isNetherHighwayActive(player);
+        boolean fixedMode     = useFixedSpeed || elytHwyActive;
+        double avgSpeed       = fixedMode ? 0.0 : sampleSpeed(player);
 
-        // Nether highway auto-detection — only when ManualSpeed is off
-        boolean elytHwyActive = false;
-        if (!useFixedSpeed && module.elytHwy.getValue()) {
-            var level = Minecraft.getInstance().level;
-            if (level != null
-                    && level.dimension() == Level.NETHER
-                    && player.getY() >= 115.0 && player.getY() <= 125.0
-                    && player.isFallFlying()) {
-                elytHwyActive = true;
-            }
-        }
-
-        boolean fixedMode = useFixedSpeed || elytHwyActive;
-
-        // Speed update — O(1), every frame; skipped in fixed mode
-        double avgSpeed = 0.0;
-        if (!fixedMode) {
-            double dx = player.getX() - player.xOld;
-            double dz = player.getZ() - player.zOld;
-            double sample = Math.sqrt(dx * dx + dz * dz) * 20.0;
-            speedSum += sample - speedBuf[speedIdx];
-            speedBuf[speedIdx] = sample;
-            speedIdx = (speedIdx + 1) % speedBufSize;
-            avgSpeed = speedSum / speedBufSize;
-        }
-
-        // Phase 1 — reflection, throttled to every REFRESH_INTERVAL frames
         if (++frameTick >= REFRESH_INTERVAL) {
             frameTick = 0;
             try {
@@ -243,12 +237,11 @@ public class WaypointWorldRenderer implements EventListener {
                 hasStoredWaypoint = false;
                 if (++consecutiveErrors >= MAX_ERRORS) {
                     reflectionReady = false;
-                    System.err.println("[WaypointETA] Disabling — dependency error (" + e + "). Is Xaero's Minimap loaded?");
+                    System.err.println("[WaypointETA] Disabling, is Xaero's Minimap loaded? (" + e + ")");
                 }
             }
         }
 
-        // Phase 2 — project stored waypoint to screen, every frame
         hasTarget = false;
         if (!hasStoredWaypoint) return;
 
@@ -265,19 +258,12 @@ public class WaypointWorldRenderer implements EventListener {
         double distXZ = Math.sqrt(relX * relX + relZ * relZ);
         double dist3D = Math.sqrt(relX * relX + relY * relY + relZ * relZ);
 
-        // Proximity fade — before early returns so fadeAlpha stays current every frame
-        int fd = module.fadeDistance.getValue();
-        if (fd > 0 && dist3D < fd) {
-            double t = dist3D / fd;
-            fadeAlpha = t * t;
-        } else {
-            fadeAlpha = 1.0;
-        }
+        updateFade(dist3D); // must run before early returns so fadeAlpha is always current
 
         if (distXZ < 1.0) return;
         if (cachedMaxDistance > 0 && dist3D > cachedMaxDistance) return;
 
-        // Horizontal cone check with small hysteresis to prevent flicker at the boundary
+        // small hysteresis prevents flicker at the cone boundary
         double horizontalDot = (relX * lookXNorm + relZ * lookZNorm) / distXZ;
         if (horizontalDot < dotThreshold - 0.01) return;
 
@@ -296,7 +282,7 @@ public class WaypointWorldRenderer implements EventListener {
             scrX = projected.x;
             scrY = Math.max(4.0, Math.min(guiH - 4.0, projected.y));
         } else {
-            // Manual fallback — extreme pitch or behind camera
+            // fallback for extreme pitch or behind-camera
             double guiW = window.getGuiScaledWidth();
             double tanHalfFovV = 1.0 / RenderSystem.getProjectionMatrix().m11();
             double aspect = guiW / guiH;
@@ -312,18 +298,23 @@ public class WaypointWorldRenderer implements EventListener {
             scrY = Math.max(4.0, Math.min(guiH - 4.0, (ndcY + 1.0) / 2.0 * guiH));
         }
 
-        // Build label text
+        buildLabel(dist3D, distXZ, useFixedSpeed, elytHwyActive, fixedMode, avgSpeed);
+        measureText();
+        hasTarget = true;
+    }
+
+    private void buildLabel(double dist3D, double distXZ, boolean useFixedSpeed, boolean elytHwyActive, boolean fixedMode, double avgSpeed) {
         boolean hideLabel = module.hideLabel.getValue();
         double effectiveSpeed = useFixedSpeed ? module.customSpeed.getValue()
                 : elytHwyActive ? 40.79
                 : avgSpeed;
 
-        String rawUnknown = cachedUnknownText;
-
         String eta;
         if (!fixedMode && avgSpeed < cachedMinSpeed) {
-            eta = (!hideLabel ? "ETA: " : "") + rawUnknown;
+            etaUnknown = true;
+            eta = (hideLabel ? "" : "ETA: ") + cachedUnknownText;
         } else {
+            etaUnknown = false;
             double etaSecs = dist3D / effectiveSpeed;
             if (!fixedMode && module.averageEstimate.getValue() > 0) {
                 etaSum += etaSecs - etaBuf[etaIdx];
@@ -331,9 +322,8 @@ public class WaypointWorldRenderer implements EventListener {
                 etaIdx = (etaIdx + 1) % etaBufSize;
                 etaSecs = etaSum / etaBufSize;
             }
-            eta = buildEta((int) etaSecs, hideLabel);
+            eta = formatEta((int) etaSecs, hideLabel);
         }
-        etaUnknown = eta.endsWith(rawUnknown);
 
         labelBuilder.setLength(0);
         if (module.showName.getValue() && !storedWpName.isEmpty()) labelBuilder.append(storedWpName).append(" | ");
@@ -346,7 +336,9 @@ public class WaypointWorldRenderer implements EventListener {
         }
         labelBuilder.append(eta);
         etaText = labelBuilder.toString();
+    }
 
+    private void measureText() {
         if (module.customFont.getValue()) {
             var rFont = RusherHackAPI.getRenderer2D().getFontRenderer();
             cachedTextW = (int) rFont.getStringWidth(etaText);
@@ -356,7 +348,6 @@ public class WaypointWorldRenderer implements EventListener {
             cachedTextW = mcFont.width(etaText);
             cachedTextH = mcFont.lineHeight;
         }
-        hasTarget = true;
     }
 
     @Subscribe
@@ -369,8 +360,7 @@ public class WaypointWorldRenderer implements EventListener {
             double guiW = window.getGuiScaledWidth();
             double guiH = window.getGuiScaledHeight();
 
-            double drawX = scrX;
-            double drawY = scrY;
+            double drawX = scrX, drawY = scrY;
             if (module.labelOffset.getValue()) {
                 if (module.offsetFixed.getValue()) {
                     drawX = guiW * 0.5;
@@ -412,8 +402,7 @@ public class WaypointWorldRenderer implements EventListener {
                     double cx = 0;
                     for (int i = 0; i < etaText.length(); i++) {
                         String ch = String.valueOf(etaText.charAt(i));
-                        int c = (ColorUtils.getRainbowRGB(i * 500L, 1.0f, 1.0f, 1.0f) & 0x00FFFFFF) | 0xFF000000;
-                        if (fadeAlpha < 1.0) c = fadeArgb(c, fadeAlpha);
+                        int c = rainbowCharColor(i, fadeAlpha);
                         rFont.drawString(ch, cx, 0, c, shadow);
                         cx += rFont.getStringWidth(ch);
                     }
@@ -428,8 +417,7 @@ public class WaypointWorldRenderer implements EventListener {
                     int cx = textX;
                     for (int i = 0; i < etaText.length(); i++) {
                         String ch = String.valueOf(etaText.charAt(i));
-                        int c = (ColorUtils.getRainbowRGB(i * 500L, 1.0f, 1.0f, 1.0f) & 0x00FFFFFF) | 0xFF000000;
-                        if (fadeAlpha < 1.0) c = fadeArgb(c, fadeAlpha);
+                        int c = rainbowCharColor(i, fadeAlpha);
                         event.getGraphics().drawString(mcFont, ch, cx, textY, c, shadow);
                         cx += mcFont.width(ch);
                     }
@@ -442,7 +430,7 @@ public class WaypointWorldRenderer implements EventListener {
         }
     }
 
-    private static String buildEta(int totalSecs, boolean hideLabel) {
+    private static String formatEta(int totalSecs, boolean hideLabel) {
         String prefix = hideLabel ? "" : "ETA: ";
         if (totalSecs < 60) return prefix + totalSecs + "s";
         if (totalSecs < 7200) {
@@ -469,14 +457,19 @@ public class WaypointWorldRenderer implements EventListener {
         return (Math.round(opacity / 100.0f * 255) << 24);
     }
 
+    private static int rainbowCharColor(int charIndex, double fadeAlpha) {
+        int c = (ColorUtils.getRainbowRGB(charIndex * 500L, 1.0f, 1.0f, 1.0f) & 0x00FFFFFF) | 0xFF000000;
+        return fadeAlpha < 1.0 ? fadeArgb(c, fadeAlpha) : c;
+    }
+
     private static int fadeArgb(int argb, double alpha) {
         int a = (int) (((argb >> 24) & 0xFF) * alpha);
         return (argb & 0x00FFFFFF) | (a << 24);
     }
 
-    /** Quadratic curve so the first half of the slider is far less sensitive than the second. */
+    // quadratic curve: first half of the slider range is much less sensitive than the second
     private static double curveOffset(int v) {
-        double normalized = v / 70.0; // -1.0 to 1.0
-        return Math.signum(normalized) * normalized * normalized * 400.0;
+        double n = v / 70.0;
+        return Math.signum(n) * n * n * 400.0;
     }
 }
