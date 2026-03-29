@@ -5,6 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.phys.Vec3;
 import org.rusherhack.client.api.RusherHackAPI;
+import org.rusherhack.core.utils.ColorUtils;
 import org.rusherhack.client.api.events.render.EventRender2D;
 import org.rusherhack.client.api.events.render.EventRender3D;
 import org.rusherhack.core.event.listener.EventListener;
@@ -68,7 +69,7 @@ public class WaypointWorldRenderer implements EventListener {
         this.cachedBgColor     = bgColorFromOpacity(module.bgOpacity.getValue());
         this.speedBufSize      = module.speedSamples.getValue();
         this.speedBuf          = new double[this.speedBufSize];
-        this.etaBufSize        = module.etaSamples.getValue();
+        this.etaBufSize        = Math.max(1, module.averageEstimate.getValue());
         this.etaBuf            = new double[this.etaBufSize];
         this.cachedMaxDistance = module.maxDistance.getValue() * (module.maxDistanceKm.getValue() ? 1000 : 1);
 
@@ -85,8 +86,8 @@ public class WaypointWorldRenderer implements EventListener {
             this.speedIdx     = 0;
             this.speedSum     = 0.0;
         });
-        module.etaSamples.onChange(() -> {
-            this.etaBufSize = module.etaSamples.getValue();
+        module.averageEstimate.onChange(() -> {
+            this.etaBufSize = Math.max(1, module.averageEstimate.getValue());
             this.etaBuf     = new double[this.etaBufSize];
             this.etaIdx     = 0;
             this.etaSum     = 0.0;
@@ -122,7 +123,9 @@ public class WaypointWorldRenderer implements EventListener {
     public boolean isListening() { return reflectionReady; }
 
     // Phase 1 — find the most looked-at waypoint via reflection.
-    // Extracted so we can use early returns without blocking Phase 2.
+    // Uses horizontal dot as cone gate, then angular deviation (horizontal +
+    // vertical) to rank candidates. atan2 for vertical ensures the comparison
+    // is distance-independent — unlike relY/dist3D which shrinks for far waypoints.
     private void refreshWaypoint(net.minecraft.client.Camera camera) throws Exception {
         Object session = getCurrentSession.invoke(null);
         if (session == null) { hasStoredWaypoint = false; return; }
@@ -142,8 +145,10 @@ public class WaypointWorldRenderer implements EventListener {
         if (lookXZLen <= 0.001) return;
 
         double lookXNorm = lookX / lookXZLen, lookZNorm = lookZ / lookXZLen;
+        double pitchRad = Math.toRadians(camera.getXRot());
         double prevX = storedWpX, prevZ = storedWpZ;
-        double bestDot = -1.0;
+        double bestAngDist2 = Double.MAX_VALUE;
+        boolean found = false;
 
         for (Object wp : list) {
             if ((boolean) isDisabled.invoke(wp)) continue;
@@ -151,20 +156,30 @@ public class WaypointWorldRenderer implements EventListener {
             double wpX = (int) getX.invoke(wp) + 0.5;
             double wpZ = (int) getZ.invoke(wp) + 0.5;
             double relX = wpX - eye.x, relZ = wpZ - eye.z;
-            double dist = Math.sqrt(relX * relX + relZ * relZ);
-            if (dist < 0.5) continue;
-            double dot = (relX * lookXNorm + relZ * lookZNorm) / dist;
-            if (dot < dotThreshold) continue;
-            if (dot <= bestDot) continue;
-            bestDot = dot;
+            double distXZ = Math.sqrt(relX * relX + relZ * relZ);
+            if (distXZ < 0.5) continue;
+
+            // Horizontal cone gate
+            double hDot = (relX * lookXNorm + relZ * lookZNorm) / distXZ;
+            if (hDot < dotThreshold) continue;
+
+            // Angular deviation — distance-independent ranking
+            double hAngle = Math.acos(Math.min(1.0, hDot));
+            double wpY = (boolean) isYIncluded.invoke(wp) ? (int) getY.invoke(wp) + 0.5 : eye.y;
+            double vAngle = Math.atan2(wpY - eye.y, distXZ) + pitchRad;
+            double angDist2 = hAngle * hAngle + vAngle * vAngle;
+
+            if (angDist2 >= bestAngDist2) continue;
+            bestAngDist2 = angDist2;
+            found = true;
             storedWpX = wpX;
-            storedWpY = (boolean) isYIncluded.invoke(wp) ? (int) getY.invoke(wp) + 0.5 : eye.y;
+            storedWpY = wpY;
             storedWpZ = wpZ;
             storedWpName = (String) getNameSafe.invoke(wp, "");
         }
 
         // If nothing in the cone, keep previous waypoint to avoid flicker on close approach
-        if (bestDot <= -1.0) return;
+        if (!found) return;
 
         if (storedWpX != prevX || storedWpZ != prevZ) {
             // Switched waypoints — reset fade only if new one is outside the fade zone
@@ -228,7 +243,7 @@ public class WaypointWorldRenderer implements EventListener {
         // Proximity fade — before early returns so fadeAlpha stays current every frame
         int fd = module.fadeDistance.getValue();
         if (fd > 0 && dist3D < fd) {
-            double t = dist3D / fd; // 0 at waypoint → 1 at fade boundary
+            double t = dist3D / fd;
             fadeAlpha = t * t;
         } else {
             fadeAlpha = 1.0;
@@ -288,7 +303,7 @@ public class WaypointWorldRenderer implements EventListener {
             eta = (!hideLabel ? "ETA: " : "") + rawUnknown;
         } else {
             double etaSecs = dist3D / effectiveSpeed;
-            if (module.etaSmoothing.getValue()) {
+            if (module.averageEstimate.getValue() > 0) {
                 etaSum += etaSecs - etaBuf[etaIdx];
                 etaBuf[etaIdx] = etaSecs;
                 etaIdx = (etaIdx + 1) % etaBufSize;
@@ -361,21 +376,44 @@ public class WaypointWorldRenderer implements EventListener {
             }
 
             boolean shadow = module.textShadow.getValue();
+            boolean isGradient = etaUnknown
+                    ? module.rainbowGradientUnknownText.getValue()
+                    : module.rainbowGradientText.getValue();
+
             if (module.customFont.getValue()) {
                 var rFont = RusherHackAPI.getRenderer2D().getFontRenderer();
-                boolean prevShadow = rFont.getDefaultShadowState();
-                rFont.setDefaultShadowState(false);
                 var stack = event.getMatrixStack();
                 stack.pushPose();
                 stack.translate(textX, textY, 0);
                 rFont.begin(stack);
-                if (shadow) rFont.drawString(etaText, 0.3, 0.3, 0x000000FF);
-                rFont.drawString(etaText, 0, 0, textColor, false);
+                if (isGradient) {
+                    double cx = 0;
+                    for (int i = 0; i < etaText.length(); i++) {
+                        String ch = String.valueOf(etaText.charAt(i));
+                        int c = (ColorUtils.getRainbowRGB(i * 500L, 1.0f, 1.0f, 1.0f) & 0x00FFFFFF) | 0xFF000000;
+                        if (fadeAlpha < 1.0) c = fadeArgb(c, fadeAlpha);
+                        rFont.drawString(ch, cx, 0, c, shadow);
+                        cx += rFont.getStringWidth(ch);
+                    }
+                } else {
+                    rFont.drawString(etaText, 0, 0, textColor, shadow);
+                }
                 rFont.end();
-                rFont.setDefaultShadowState(prevShadow);
                 stack.popPose();
             } else {
-                event.getGraphics().drawString(Minecraft.getInstance().font, etaText, textX, textY, textColor, shadow);
+                var mcFont = Minecraft.getInstance().font;
+                if (isGradient) {
+                    int cx = textX;
+                    for (int i = 0; i < etaText.length(); i++) {
+                        String ch = String.valueOf(etaText.charAt(i));
+                        int c = (ColorUtils.getRainbowRGB(i * 500L, 1.0f, 1.0f, 1.0f) & 0x00FFFFFF) | 0xFF000000;
+                        if (fadeAlpha < 1.0) c = fadeArgb(c, fadeAlpha);
+                        event.getGraphics().drawString(mcFont, ch, cx, textY, c, shadow);
+                        cx += mcFont.width(ch);
+                    }
+                } else {
+                    event.getGraphics().drawString(mcFont, etaText, textX, textY, textColor, shadow);
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
