@@ -13,17 +13,13 @@ import java.awt.Color;
 
 /*
 TODO:
-- Add Nether highway detector (and a toggle setting) that turns on ManualSpeed when youre in the nether at y120
 - Port to Meteor or XaeroPlus addon
-
-- look into Save / Load custom config?
-
  */
 
 public class WaypointETAModule extends ToggleableModule {
 
     public enum Preset {
-        MINIMAL, DYNAMIC, STATIC, FIXED, RELATIVE, EBOUNCER, CUSTOM;
+        MINIMAL, DYNAMIC, STATIC, FIXED, RELATIVE, CUSTOM;
 
         @Override
         public String toString() {
@@ -120,6 +116,11 @@ public class WaypointETAModule extends ToggleableModule {
                     .incremental(0.5)
                     .setVisibility(() -> this.speedGroup.getValue() && this.setSpeed.getValue());
 
+    final BooleanSetting elytHwy =
+            new BooleanSetting("NetherHwyDetect",
+                    "Auto-use 40.79 bps when flying elytra in Nether at Y 115-125", false)
+                    .setVisibility(() -> this.speedGroup.getValue() && !this.setSpeed.getValue());
+
     final NumberSetting<Integer> speedSamples =
             new NumberSetting<>("Samples", "Frames averaged for speed (more = smoother, less = reactive)", 60, 5, 1800)
                     .incremental(1)
@@ -196,7 +197,7 @@ public class WaypointETAModule extends ToggleableModule {
         this.filtersGroup.addSubSettings(this.onlyTemporary, this.focusAngle, this.maxDistance, this.maxDistanceKm);
         this.showWhenUnknown.addSubSettings(this.unknownText, this.unknownColor, this.rainbowGradientUnknownText);
         this.displayGroup.addSubSettings(this.hideLabel, this.showName, this.fadeDistance, this.showDistance, this.distanceKm, this.showWhenUnknown);
-        this.speedGroup.addSubSettings(this.setSpeed, this.customSpeed, this.speedSamples, this.minSpeed, this.averageEstimate);
+        this.speedGroup.addSubSettings(this.setSpeed, this.customSpeed, this.elytHwy, this.speedSamples, this.minSpeed, this.averageEstimate);
         this.formattingGroup.addSubSettings(this.customFont, this.textShadow, this.textColor, this.rainbowGradientText, this.bgOpacity);
         this.labelOffset.addSubSettings(this.offsetX, this.offsetY, this.offsetFixed, this.offsetRelative, this.resetOffset);
 
@@ -207,7 +208,7 @@ public class WaypointETAModule extends ToggleableModule {
                 filtersGroup, onlyTemporary, maxDistance, maxDistanceKm, focusAngle,
                 displayGroup, hideLabel, showName, showDistance, distanceKm, showWhenUnknown,
                 unknownText, unknownColor, rainbowGradientUnknownText, fadeDistance,
-                speedGroup, setSpeed, customSpeed, speedSamples, minSpeed, averageEstimate,
+                speedGroup, setSpeed, customSpeed, elytHwy, speedSamples, minSpeed, averageEstimate,
                 formattingGroup, customFont, textShadow, textColor, rainbowGradientText, bgOpacity,
                 labelOffset, offsetX, offsetY, offsetFixed, offsetRelative
         }) {
@@ -258,6 +259,7 @@ public class WaypointETAModule extends ToggleableModule {
             showName.setValue(false);
             showDistance.setValue(false);
             rainbowGradientText.setValue(false);
+            elytHwy.setValue(true);
 
             switch (p) {
                 case MINIMAL -> {
@@ -318,19 +320,6 @@ public class WaypointETAModule extends ToggleableModule {
                     offsetRelative.setValue(true);
                     offsetX.setValue(0);
                     offsetY.setValue(12);
-                }
-                case EBOUNCER -> {
-                    hideLabel.setValue(true);
-                    minSpeed.setValue(0.5);
-                    averageEstimate.setValue(0);
-                    unknownText.setValue("∿≋∿ξ=ξ=ε=ε=∿ ≡ 厂(´∀`)7 ≡");
-                    fadeDistance.setValue(5);
-                    showWhenUnknown.setValue(true);
-                    setSpeed.setValue(true);
-                    customSpeed.setValue(40.79);
-                    offsetX.setValue(0);
-                    offsetY.setValue(0);
-                    rainbowGradientText.setValue(true);
                 }
             }
         } finally {

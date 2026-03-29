@@ -3,6 +3,8 @@ package hxgn;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
 import org.rusherhack.client.api.RusherHackAPI;
 import org.rusherhack.core.utils.ColorUtils;
@@ -60,6 +62,7 @@ public class WaypointWorldRenderer implements EventListener {
     private double cachedMinSpeed;
     private int cachedBgColor;
     private int cachedMaxDistance;
+    private String cachedUnknownText = "?";
 
     public WaypointWorldRenderer(WaypointETAModule module) {
         this.module = module;
@@ -72,8 +75,10 @@ public class WaypointWorldRenderer implements EventListener {
         this.etaBufSize        = Math.max(1, module.averageEstimate.getValue());
         this.etaBuf            = new double[this.etaBufSize];
         this.cachedMaxDistance = module.maxDistance.getValue() * (module.maxDistanceKm.getValue() ? 1000 : 1);
+        this.cachedUnknownText = sanitizeUnknownText(module.unknownText.getValue());
 
         module.focusAngle.onChange(() -> this.dotThreshold = 1.0 - module.focusAngle.getValue() / 1000.0);
+        module.unknownText.onChange(() -> this.cachedUnknownText = sanitizeUnknownText(module.unknownText.getValue()));
         module.offsetX.onChange(() -> this.cachedOffsetX = curveOffset(module.offsetX.getValue()));
         module.offsetY.onChange(() -> this.cachedOffsetY = curveOffset(module.offsetY.getValue()));
         module.minSpeed.onChange(() -> this.cachedMinSpeed = module.minSpeed.getValue());
@@ -195,18 +200,38 @@ public class WaypointWorldRenderer implements EventListener {
     @Subscribe
     private void onRender3D(EventRender3D event) {
         if (!module.isToggled()) { hasTarget = false; hasStoredWaypoint = false; return; }
+
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) { hasTarget = false; hasStoredWaypoint = false; return; }
         var camera = Minecraft.getInstance().gameRenderer.getMainCamera();
 
-        // Speed update — O(1), every frame
-        double dx = player.getX() - player.xOld;
-        double dz = player.getZ() - player.zOld;
-        double sample = Math.sqrt(dx * dx + dz * dz) * 20.0;
-        speedSum += sample - speedBuf[speedIdx];
-        speedBuf[speedIdx] = sample;
-        speedIdx = (speedIdx + 1) % speedBufSize;
-        double avgSpeed = speedSum / speedBufSize;
+        boolean useFixedSpeed = module.setSpeed.getValue();
+
+        // Nether highway auto-detection — only when ManualSpeed is off
+        boolean elytHwyActive = false;
+        if (!useFixedSpeed && module.elytHwy.getValue()) {
+            var level = Minecraft.getInstance().level;
+            if (level != null
+                    && level.dimension() == Level.NETHER
+                    && player.getY() >= 115.0 && player.getY() <= 125.0
+                    && player.isFallFlying()) {
+                elytHwyActive = true;
+            }
+        }
+
+        boolean fixedMode = useFixedSpeed || elytHwyActive;
+
+        // Speed update — O(1), every frame; skipped in fixed mode
+        double avgSpeed = 0.0;
+        if (!fixedMode) {
+            double dx = player.getX() - player.xOld;
+            double dz = player.getZ() - player.zOld;
+            double sample = Math.sqrt(dx * dx + dz * dz) * 20.0;
+            speedSum += sample - speedBuf[speedIdx];
+            speedBuf[speedIdx] = sample;
+            speedIdx = (speedIdx + 1) % speedBufSize;
+            avgSpeed = speedSum / speedBufSize;
+        }
 
         // Phase 1 — reflection, throttled to every REFRESH_INTERVAL frames
         if (++frameTick >= REFRESH_INTERVAL) {
@@ -259,7 +284,7 @@ public class WaypointWorldRenderer implements EventListener {
         var window = Minecraft.getInstance().getWindow();
         double guiH = window.getGuiScaledHeight();
 
-        net.minecraft.world.phys.Vec2 projected = null;
+        Vec2 projected = null;
         var renderer = event.getRenderer();
         boolean wasBuilding = renderer.isBuilding();
         if (!wasBuilding) renderer.begin();
@@ -289,21 +314,18 @@ public class WaypointWorldRenderer implements EventListener {
 
         // Build label text
         boolean hideLabel = module.hideLabel.getValue();
-        boolean useFixedSpeed = module.setSpeed.getValue();
-        double effectiveSpeed = useFixedSpeed ? module.customSpeed.getValue() : avgSpeed;
+        double effectiveSpeed = useFixedSpeed ? module.customSpeed.getValue()
+                : elytHwyActive ? 40.79
+                : avgSpeed;
 
-        // Sanitize unknownText - strip § codes so unknownColor always wins, cap length
-        String rawUnknown = module.unknownText.getValue().strip();
-        if (rawUnknown.isEmpty()) rawUnknown = "?";
-        rawUnknown = rawUnknown.replace("§", "");
-        if (rawUnknown.length() > 64) rawUnknown = rawUnknown.substring(0, 64);
+        String rawUnknown = cachedUnknownText;
 
         String eta;
-        if (avgSpeed < cachedMinSpeed) {
+        if (!fixedMode && avgSpeed < cachedMinSpeed) {
             eta = (!hideLabel ? "ETA: " : "") + rawUnknown;
         } else {
             double etaSecs = dist3D / effectiveSpeed;
-            if (module.averageEstimate.getValue() > 0) {
+            if (!fixedMode && module.averageEstimate.getValue() > 0) {
                 etaSum += etaSecs - etaBuf[etaIdx];
                 etaBuf[etaIdx] = etaSecs;
                 etaIdx = (etaIdx + 1) % etaBufSize;
@@ -435,6 +457,12 @@ public class WaypointWorldRenderer implements EventListener {
         int days = totalSecs / 86400, remainderSecs = totalSecs % 86400;
         int hours = remainderSecs / 3600, minutes = (remainderSecs % 3600) / 60;
         return prefix + days + "d " + hours + "h " + minutes + "m";
+    }
+
+    private static String sanitizeUnknownText(String raw) {
+        raw = raw.strip().replace("§", "");
+        if (raw.isEmpty()) return "?";
+        return raw.length() > 64 ? raw.substring(0, 64) : raw;
     }
 
     private static int bgColorFromOpacity(int opacity) {
